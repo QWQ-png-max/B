@@ -1,710 +1,517 @@
-# 导入所需库
 import streamlit as st
+from diffusers import StableDiffusionXLPipeline, TextToVideoSDPipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from streamlit_drawable_canvas import st_canvas
+import torch
+from PIL import Image
 import cv2
 import numpy as np
-from PIL import Image
-import os
-from datetime import datetime
-import torch
-from diffusers import StableDiffusionPipeline, StableDiffusionInpaintPipeline
-import glob
 import time
+import io
+import base64
+import os
 
-# 设置 Streamlit 页面配置
-st.set_page_config(
-    page_title="Advanced Personal AI Image & Video Tool",
-    layout="wide",
-    page_icon="🎥"
-)
-
-# 全局标志，用于取消任务
-if 'cancel_task' not in st.session_state:
-    st.session_state.cancel_task = False
-if 'continue_task' not in st.session_state:
-    st.session_state.continue_task = False
-
-# 自定义 CSS：卡片式布局、动画按钮
-st.markdown(
-    """
-    <style>
-    .card {
-        background-color: #f9f9f9;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-        margin-bottom: 20px;
-        transition: all 0.3s ease;
-    }
-    .card:hover {
-        box-shadow: 0 8px 16px rgba(0,0,0,0.2);
-        transform: translateY(-5px);
-    }
-    .custom-button {
-        display: inline-block;
-        padding: 12px 24px;
-        font-size: 16px;
-        font-weight: bold;
-        color: white;
-        background: linear-gradient(45deg, #4CAF50, #45a049);
-        border: none;
-        border-radius: 10px;
-        cursor: pointer;
-        transition: all 0.3s ease;
-        transform: scale(1);
-    }
-    .custom-button:hover {
-        transform: scale(1.1);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    }
-    .cancel-button {
-        background: linear-gradient(45deg, #f44336, #d32f2f);
-    }
-    .stButton>button {
-        background: linear-gradient(45deg, #2196F3, #21CBF3);
-        color: white;
-        border-radius: 10px;
-    }
-    .history-item {
-        margin: 5px 0;
-        font-size: 14px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-# 创建默认文件夹
-if not os.path.exists("input"):
-    os.makedirs("input")
-if not os.path.exists("output"):
-    os.makedirs("output")
-
-
-# 初始化 Stable Diffusion 模型
+# 加载 Stable Diffusion XL 图像模型
 @st.cache_resource
-def load_diffusion_model(model_type="generate"):
-    """加载 Stable Diffusion 模型，优先 GPU"""
+def load_sd_model():
     try:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        if model_type == "inpaint":
-            pipe = StableDiffusionInpaintPipeline.from_pretrained(
-                "runwayml/stable-diffusion-inpainting",
-                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-                use_auth_token=False
-            )
-        else:
-            pipe = StableDiffusionPipeline.from_pretrained(
-                "runwayml/stable-diffusion-v1-5",
-                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-                use_auth_token=False
-            )
-        pipe = pipe.to(device)
-        if device == "cpu":
-            pipe.enable_attention_slicing()
-        st.success(f"🎨 Stable Diffusion {'Inpainting' if model_type == 'inpaint' else 'Generate'} 加载成功（{device}）")
+        model_id = "stabilityai/stable-diffusion-xl-base-1.0"
+        pipe = StableDiffusionXLPipeline.from_pretrained(model_id, torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32)
+        if torch.cuda.is_available():
+            pipe = pipe.to("cuda")
         return pipe
     except Exception as e:
-        st.error(f"加载模型失败: {e}")
+        st.error(f"加载图像模型失败: {e}")
         return None
 
-
-# 分析图像/视频内容
-def analyze_content(file, file_type):
-    """分析图像/视频内容，提取主色调等特征"""
+# 加载视频生成模型
+@st.cache_resource
+def load_video_model():
     try:
-        if file_type == "图像":
-            image = Image.open(file)
-            image_np = np.array(image)
-            mean_color = np.mean(image_np, axis=(0, 1))
-            return f"dominant colors RGB({int(mean_color[0])},{int(mean_color[1])},{int(mean_color[2])})"
-        else:
-            cap = cv2.VideoCapture(os.path.join(st.session_state.upload_path, file.name))
-            ret, frame = cap.read()
-            cap.release()
-            if not ret:
-                return "dynamic scene"
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mean_color = np.mean(frame_rgb, axis=(0, 1))
-            return f"dominant colors RGB({int(mean_color[0])},{int(mean_color[1])},{int(mean_color[2])})"
+        model_id = "damo-vilab/text-to-video-ms-1.7b"
+        pipe = TextToVideoSDPipeline.from_pretrained(model_id, torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32)
+        if torch.cuda.is_available():
+            pipe = pipe.to("cuda")
+        return pipe
     except Exception as e:
-        return "unknown content"
+        st.error(f"加载视频模型失败: {e}")
+        return None
 
-
-# 智能扩写描述
-def expand_prompt(prompt, duration=None, file=None, file_type=None):
-    """根据时长和内容动态扩写描述"""
+# 加载中文扩写模型
+@st.cache_resource
+def load_text_model():
     try:
-        if not prompt.strip():
-            return "A beautiful scene, highly detailed, cinematic"
-
-        base_desc = prompt
-        content_desc = ""
-        if file and file_type:
-            content_desc = analyze_content(file, file_type)
-
-        target_words = 100 if not duration else int(30 * duration)
-        additions = [
-            f", highly detailed, vibrant colors, soft lighting, {content_desc}",
-            f", cinematic style, realistic textures, 4K resolution, {content_desc}",
-            f", in a serene environment, vivid details, dreamy atmosphere, {content_desc}"
-        ]
-        import random
-        expanded = base_desc + random.choice(additions)
-
-        if duration and duration > 10:
-            extra_details = [
-                ", with intricate patterns and subtle movements",
-                ", featuring dynamic lighting and rich textures",
-                ", evolving with gentle transitions and vivid contrasts"
-            ]
-            for _ in range(int(duration / 5)):
-                expanded += random.choice(extra_details)
-
-        target_chars = target_words * 5
-        if len(expanded) > target_chars:
-            expanded = expanded[:target_chars] + "..."
-
-        return expanded
+        model_name = "Qwen/Qwen2-7B-Instruct"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32)
+        if torch.cuda.is_available():
+            model = model.cuda()
+        return tokenizer, model
     except Exception as e:
-        st.error(f"扩写错误: {e}")
-        return prompt
+        st.error(f"加载扩写模型失败: {e}")
+        return None, None
 
-
-# 描述生成图像
-def generate_image_from_text(prompt, pipe):
-    """使用 Stable Diffusion 生成图像"""
+# 加载 LaMa 水印去除模型（简化版，需本地模型文件）
+@st.cache_resource
+def load_lama_model():
     try:
-        if pipe is None:
-            st.error("模型未加载！")
-            return None
-        if st.session_state.cancel_task:
-            st.warning("任务已取消！")
-            return None
-        with torch.no_grad():
-            image = pipe(prompt, num_inference_steps=20, guidance_scale=7.5).images[0]
+        # 假设 LaMa 模型已下载到本地（需手动下载：https://github.com/advimman/lama）
+        from lama_cleaner.model import LaMa
+        model = LaMa(device="cuda" if torch.cuda.is_available() else "cpu")
+        return model
+    except Exception as e:
+        st.error(f"加载 LaMa 模型失败: {e}")
+        return None
+
+# AI 补帧（RIFE 简化版，需本地模型）
+@st.cache_resource
+def load_rife_model():
+    try:
+        # 假设 RIFE 模型已下载（https://github.com/megvii-research/ECCV2022-RIFE）
+        from rife import RIFE
+        model = RIFE(device="cuda" if torch.cuda.is_available() else "cpu")
+        return model
+    except Exception as e:
+        st.error(f"加载 RIFE 模型失败: {e}")
+        return None
+
+# 中文扩写
+def generate_text(prompt, max_length=100):
+    try:
+        tokenizer, model = load_text_model()
+        if tokenizer is None or model is None:
+            return "扩写模型未加载"
+        inputs = tokenizer(prompt, return_tensors="pt")
+        if torch.cuda.is_available():
+            inputs = {k: v.cuda() for k, v in inputs.items()}
+        outputs = model.generate(
+            inputs["input_ids"],
+            max_length=max_length,
+            num_return_sequences=1,
+            temperature=0.7,
+            top_p=0.9,
+            do_sample=True
+        )
+        return tokenizer.decode(outputs[0], skip_special_tokens=True)
+    except Exception as e:
+        return f"扩写失败: {e}"
+
+# 生成图像
+def generate_image(prompt):
+    pipe = load_sd_model()
+    if pipe is None:
+        return None
+    try:
+        image = pipe(prompt, num_inference_steps=50, height=1024, width=1024).images[0]
         return image
     except Exception as e:
-        st.error(f"生成图像错误: {e}")
+        st.error(f"生成图像失败: {e}")
         return None
 
+# 生成视频
+def generate_video(prompt, duration=5, fps=24):
+    pipe = load_video_model()
+    if pipe is None:
+        return None
+    try:
+        frames = duration * fps
+        frame_time = 1.5 if torch.cuda.is_available() else 6  # RTX 4060: 1.5s/帧, CPU: 6s/帧
+        progress_bar = st.progress(0)
+        time_display = st.empty()
+        video_frames = pipe(prompt, num_frames=frames, num_inference_steps=50).frames
+        for i in range(frames):
+            progress = (i + 1) / frames
+            progress_bar.progress(progress)
+            remaining_time = (frames - (i + 1)) * frame_time
+            time_display.write(f"预计剩余时间: {remaining_time:.1f} 秒")
+        out_path = "output.mp4"
+        out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (video_frames[0].shape[1], video_frames[0].shape[0]))
+        for frame in video_frames:
+            out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        out.release()
+        return out_path
+    except Exception as e:
+        st.error(f"生成视频失败: {e}")
+        return None
 
 # 图像+描述生成视频
-def generate_video_from_image_and_text(image, prompt, pipe, duration, fps=24):
-    """基于图像和描述生成视频"""
+def generate_image_to_video(image, prompt, duration=5, fps=24):
+    pipe = load_video_model()
+    if pipe is None:
+        return None
     try:
-        if pipe is None:
-            st.error("模型未加载！")
-            return None
-        frames = []
-        num_frames = int(duration * fps)
-        progress = st.progress(0)
-
-        # 初始帧
-        init_image = image.resize((512, 512))  # Stable Diffusion 要求 512x512
-        mask = np.zeros((512, 512), dtype=np.uint8)  # 全图 inpainting
-        frames.append(np.array(init_image.convert("RGB")))
-
-        # 生成后续帧
-        for i in range(1, num_frames):
-            if st.session_state.cancel_task:
-                st.warning("视频生成已取消！")
-                return None
-            frame_prompt = f"{prompt}, frame {i}, subtle motion"
-            with torch.no_grad():
-                frame = pipe(
-                    prompt=frame_prompt,
-                    init_image=init_image,
-                    mask_image=Image.fromarray(mask),
-                    strength=0.3,  # 轻微修改初始图像
-                    num_inference_steps=20
-                ).images[0]
-            frames.append(np.array(frame.convert("RGB")))
-            progress.progress((i + 1) / num_frames)
-
-        height, width = frames[0].shape[:2]
-        output_path = os.path.join(st.session_state.output_path,
-                                   f"generated_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-        for frame in frames:
+        frames = duration * fps
+        frame_time = 1.5 if torch.cuda.is_available() else 6
+        progress_bar = st.progress(0)
+        time_display = st.empty()
+        video_frames = pipe(prompt, num_frames=frames, num_inference_steps=50).frames  # 简化，需结合初始图像
+        for i in range(frames):
+            progress = (i + 1) / frames
+            progress_bar.progress(progress)
+            remaining_time = (frames - (i + 1)) * frame_time
+            time_display.write(f"预计剩余时间: {remaining_time:.1f} 秒")
+        out_path = "output_image_to_video.mp4"
+        out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (video_frames[0].shape[1], video_frames[0].shape[0]))
+        for frame in video_frames:
             out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
         out.release()
-        return output_path
+        return out_path
     except Exception as e:
-        st.error(f"生成视频错误: {e}")
+        st.error(f"生成视频失败: {e}")
         return None
 
-
-# 生成视频（描述）
-def generate_video_from_text(prompt, pipe, duration, fps=24):
-    """生成图像序列并合成为视频"""
+# 水印去除（LaMa）
+def remove_watermark(image, mask):
     try:
-        if pipe is None:
-            st.error("模型未加载！")
-            return None
-        frames = []
-        num_frames = int(duration * fps)
-        progress = st.progress(0)
-        for i in range(num_frames):
-            if st.session_state.cancel_task:
-                st.warning("视频生成已取消！")
-                return None
-            frame_prompt = f"{prompt}, frame {i}"
-            image = generate_image_from_text(frame_prompt, pipe)
-            if image:
-                frames.append(np.array(image.convert("RGB")))
-            progress.progress((i + 1) / num_frames)
-
-        height, width = frames[0].shape[:2]
-        output_path = os.path.join(st.session_state.output_path,
-                                   f"generated_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-        for frame in frames:
-            out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-        out.release()
-        return output_path
+        model = load_lama_model()
+        if model is None:
+            # 回退到 cv2.inpaint
+            image_np = np.array(image)
+            mask_np = np.array(mask)[:, :, 3]
+            mask_np = mask_np.astype(np.uint8)
+            inpainted = cv2.inpaint(image_np, mask_np, 3, cv2.INPAINT_TELEA)
+            return Image.fromarray(inpainted)
+        image_np = np.array(image)
+        mask_np = np.array(mask)[:, :, 3]
+        mask_np = mask_np.astype(np.uint8)
+        inpainted = model(image_np, mask_np)
+        return Image.fromarray(inpainted)
     except Exception as e:
-        st.error(f"生成视频错误: {e}")
+        st.error(f"水印去除失败: {e}")
         return None
 
-
-# 去除图像水印
-def remove_watermark_image(image, mask, inpaint_radius=3):
-    """使用 OpenCV inpainting 去除图像水印"""
+# AI 补帧（RIFE）
+def ai_frame_interpolation(video_path, target_fps):
     try:
-        result = cv2.inpaint(image, mask, inpaintRadius=inpaint_radius, flags=cv2.INPAINT_TELEA)
-        return result
-    except Exception as e:
-        st.error(f"图像去水印错误: {e}")
-        return image
-
-
-# 去除视频水印
-def remove_watermark_video(video_path, mask, output_path, inpaint_radius=3, max_duration=None):
-    """逐帧去除视频水印，支持指定时长"""
-    try:
+        model = load_rife_model()
+        if model is None:
+            # 回退到简单插帧
+            cap = cv2.VideoCapture(video_path)
+            frames = []
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames.append(frame)
+            cap.release()
+            original_fps = 24
+            factor = target_fps / original_fps
+            new_frames = []
+            for i in range(len(frames)):
+                new_frames.append(frames[i])
+                if i < len(frames) - 1:
+                    for _ in range(int(factor) - 1):
+                        new_frames.append(frames[i])
+            out_path = "output_interpolated.mp4"
+            out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), target_fps, (frames[0].shape[1], frames[0].shape[0]))
+            for frame in new_frames:
+                out.write(frame)
+            out.release()
+            return out_path
+        # RIFE 插帧（需本地模型）
         cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise ValueError("无法打开视频")
-
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-        if max_duration:
-            max_frames = int(max_duration * fps)
-            total_frames = min(total_frames, max_frames)
-
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-        progress = st.progress(0)
-        frame_count = 0
-
-        while cap.isOpened() and frame_count < total_frames:
-            if st.session_state.cancel_task:
-                cap.release()
-                out.release()
-                st.warning("视频处理已取消！")
-                return None
+        frames = []
+        while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
-            processed_frame = remove_watermark_image(frame, mask, inpaint_radius)
-            out.write(processed_frame)
-            frame_count += 1
-            progress.progress(min(frame_count / total_frames, 1.0))
-
+            frames.append(frame)
         cap.release()
+        new_frames = []
+        for i in range(len(frames) - 1):
+            new_frames.append(frames[i])
+            interpolated = model.infer(frames[i], frames[i + 1], num_interpolated=int(target_fps / 24 - 1))
+            new_frames.extend(interpolated)
+        new_frames.append(frames[-1])
+        out_path = "output_interpolated.mp4"
+        out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), target_fps, (frames[0].shape[1], frames[0].shape[0]))
+        for frame in new_frames:
+            out.write(frame)
         out.release()
-        return output_path
+        return out_path
     except Exception as e:
-        st.error(f"视频去水印错误: {e}")
+        st.error(f"补帧失败: {e}")
         return None
 
+# 主题切换
+if "theme" not in st.session_state:
+    st.session_state.theme = "dark"
 
-# 预计时间估算
-def estimate_time(task, duration=None, frame_count=None):
-    """估算任务时间（秒）"""
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if task == "image":
-        return 10 if device == "cuda" else 120
-    elif task in ["video_generate", "video_from_image"]:
-        image_time = 10 if device == "cuda" else 120
-        return image_time * duration * 24
-    elif task == "video_remove":
-        frame_time = 0.05 if device == "cuda" else 0.1
-        return frame_count * frame_time
+def toggle_theme():
+    st.session_state.theme = "light" if st.session_state.theme == "dark" else "dark"
 
+# UI 样式
+theme_styles = {
+    "dark": """
+        .main { 
+            background: linear-gradient(135deg, #1e3a8a, #3b82f6); 
+            padding: 20px; 
+            border-radius: 10px; 
+            color: white; 
+        }
+        .stButton>button {
+            background: linear-gradient(45deg, #7c3aed, #db2777);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .stButton>button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(219, 39, 119, 0.5);
+        }
+        .stTextInput>div>input {
+            border: 2px solid #3b82f6;
+            border-radius: 5px;
+            padding: 10px;
+            background-color: #1e40af;
+            color: white;
+        }
+        .stSlider>div>div {
+            background-color: #3b82f6;
+        }
+        .stProgress .st-bo {
+            background-color: #3b82f6;
+        }
+        .stTabs [data-baseweb="tab"] {
+            background-color: #1e3a8a;
+            color: white;
+            border-radius: 5px;
+            margin: 0 5px;
+        }
+        .stTabs [data-baseweb="tab"]:hover {
+            background-color: #3b82f6;
+        }
+        .fps-button {
+            margin-right: 10px;
+        }
+        .title {
+            animation: fadeIn 1s ease-in-out;
+        }
+        @keyframes fadeIn {
+            0% { opacity: 0; transform: translateY(-10px); }
+            100% { opacity: 1; transform: translateY(0); }
+        }
+    """,
+    "light": """
+        .main { 
+            background: linear-gradient(135deg, #e0e7ff, #f9fafb); 
+            padding: 20px; 
+            border-radius: 10px; 
+            color: #1e3a8a; 
+        }
+        .stButton>button {
+            background: linear-gradient(45deg, #3b82f6, #93c5fd);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .stButton>button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
+        }
+        .stTextInput>div>input {
+            border: 2px solid #3b82f6;
+            border-radius: 5px;
+            padding: 10px;
+            background-color: white;
+            color: #1e3a8a;
+        }
+        .stSlider>div>div {
+            background-color: #3b82f6;
+        }
+        .stProgress .st-bo {
+            background-color: #3b82f6;
+        }
+        .stTabs [data-baseweb="tab"] {
+            background-color: #e0e7ff;
+            color: #1e3a8a;
+            border-radius: 5px;
+            margin: 0 5px;
+        }
+        .stTabs [data-baseweb="tab"]:hover {
+            background-color: #93c5fd;
+        }
+        .fps-button {
+            margin-right: 10px;
+        }
+        .title {
+            animation: fadeIn 1s ease-in-out;
+        }
+        @keyframes fadeIn {
+            0% { opacity: 0; transform: translateY(-10px); }
+            100% { opacity: 1; transform: translateY(0); }
+        }
+    """
+}
 
-# Streamlit 界面
-st.title("🎥 高级个人 AI 图像与视频处理工具")
-st.markdown("本地运行，带卡片式界面、动画按钮和交互式画布，支持图像+描述生成视频、自由时长和动态扩写！")
-st.markdown(
-    f"🌟 运行于 {'GPU' if torch.cuda.is_available() else 'CPU'} | 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.markdown(f"""
+    <style>
+    {theme_styles[st.session_state.theme]}
+    .card {{
+        background-color: { '#1e40af' if st.session_state.theme == 'dark' else '#f9fafb' };
+        padding: 15px;
+        border-radius: 10px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+    }}
+    </style>
+""", unsafe_allow_html=True)
 
-# 导航栏
-st.sidebar.header("🚀 导航")
-option = st.sidebar.radio(
-    "选择功能",
-    ["📷 描述生成图像", "🎬 描述生成视频", "🖼️ 图像+描述生成视频", "✍️ 智能扩写描述", "🧹 消除图像/视频水印"]
-)
+# 主界面
+st.markdown('<h1 class="title">AI 图像处理平台</h1>', unsafe_allow_html=True)
+st.write(f"运行于 {'GPU (' + torch.cuda.get_device_name(0) + ')' if torch.cuda.is_available() else 'CPU'}")
+st.button("切换主题", on_click=toggle_theme)
 
-# 路径设置
-with st.sidebar.expander("📁 文件路径设置"):
-    upload_path = st.text_input("上传文件夹路径", value="input")
-    output_path = st.text_input("保存文件夹路径", value="output")
-    st.session_state.upload_path = upload_path
-    st.session_state.output_path = output_path
-    if not os.path.exists(upload_path):
-        os.makedirs(upload_path)
-    if not os.path.exists(output_path):
-        os.makedirs(output_path)
+# 功能选择
+with st.container():
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["描述生成图像", "描述生成视频", "图像+描述生成视频", "智能扩写", "水印去除", "AI 补帧"])
 
-# 历史文件
-with st.sidebar.expander("📜 处理历史"):
-    history_files = glob.glob(os.path.join(output_path, "*"))
-    if history_files:
-        st.write("最近生成/处理的文件：")
-        for f in history_files[:5]:
-            st.markdown(f'<p class="history-item">{os.path.basename(f)}</p>', unsafe_allow_html=True)
-            st.download_button(
-                label=f"⬇️ 下载 {os.path.basename(f)}",
-                data=open(f, "rb").read(),
-                file_name=os.path.basename(f),
-                mime="image/png" if f.endswith(".png") else "video/mp4"
+    with tab1:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.header("描述生成图像")
+        prompt = st.text_input("输入描述", "月光下的湖泊", key="image_prompt")
+        if st.button("生成图像"):
+            with st.spinner("正在生成图像..."):
+                image = generate_image(prompt)
+                if image:
+                    st.image(image, caption="生成图像")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with tab2:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.header("描述生成视频")
+        prompt = st.text_input("输入描述", "星空飞船", key="video_prompt")
+        duration = st.slider("视频时长（秒）", 1, 20, 5)
+        st.write("选择 FPS：")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            fps_24 = st.button("24 FPS", key="fps_24", help="生成 24 帧/秒视频")
+        with col2:
+            fps_30 = st.button("30 FPS", key="fps_30", help="生成 30 帧/秒视频")
+        with col3:
+            fps_60 = st.button("60 FPS", key="fps_60", help="生成 60 帧/秒视频")
+        fps = 24
+        if fps_30:
+            fps = 30
+        elif fps_60:
+            fps = 60
+        if fps_24 or fps_30 or fps_60:
+            with st.spinner("正在生成视频..."):
+                video_path = generate_video(prompt, duration, fps)
+                if video_path:
+                    with open(video_path, "rb") as f:
+                        video_bytes = f.read()
+                    st.video(video_bytes)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with tab3:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.header("图像+描述生成视频")
+        uploaded_image = st.file_uploader("上传图像", type=["png", "jpg", "jpeg"])
+        prompt = st.text_input("输入描述", "飞船升空", key="image_video_prompt")
+        duration = st.slider("视频时长（秒）", 1, 20, 5, key="image_video_duration")
+        st.write("选择 FPS：")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            fps_24 = st.button("24 FPS", key="fps_24_image", help="生成 24 帧/秒视频")
+        with col2:
+            fps_30 = st.button("30 FPS", key="fps_30_image", help="生成 30 帧/秒视频")
+        with col3:
+            fps_60 = st.button("60 FPS", key="fps_60_image", help="生成 60 帧/秒视频")
+        fps = 24
+        if fps_30:
+            fps = 30
+        elif fps_60:
+            fps = 60
+        if fps_24 or fps_30 or fps_60:
+            with st.spinner("正在生成视频..."):
+                if uploaded_image:
+                    image = Image.open(uploaded_image)
+                    video_path = generate_image_to_video(image, prompt, duration, fps)
+                    if video_path:
+                        with open(video_path, "rb") as f:
+                            video_bytes = f.read()
+                        st.video(video_bytes)
+                else:
+                    st.error("请上传图像")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with tab4:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.header("智能扩写")
+        prompt = st.text_input("输入中文描述（扩写）", "海洋")
+        if st.button("智能扩写"):
+            with st.spinner("正在扩写..."):
+                expanded_text = generate_text(prompt)
+                st.write("扩写结果：")
+                st.write(expanded_text)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with tab5:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.header("水印去除")
+        uploaded_image = st.file_uploader("上传含水印图像", type=["png", "jpg", "jpeg"], key="watermark_image")
+        if uploaded_image:
+            image = Image.open(uploaded_image)
+            st.image(image, caption="原始图像")
+            canvas_result = st_canvas(
+                stroke_width=3,
+                stroke_color="#000000",
+                background_image=image,
+                update_streamlit=True,
+                height=400,
+                width=600,
+                drawing_mode="freedraw",
+                key="canvas"
             )
-    else:
-        st.write("暂无历史文件")
-
-# 双列布局
-col1, col2 = st.columns([1, 1])
-
-# 功能 1：描述生成图像
-if option == "📷 描述生成图像":
-    with col1:
-        with st.container():
-            st.markdown('<div class="card"><h3>📷 描述生成图像</h3>', unsafe_allow_html=True)
-            prompt = st.text_area("输入描述（如 '夕阳下的湖'）", value="")
-            uploaded_file = st.file_uploader("上传参考图像（可选）", type=["jpg", "png", "jpeg"])
-            if st.checkbox("✨ 智能扩写描述"):
-                prompt = expand_prompt(prompt, file=uploaded_file, file_type="图像")
-                st.write("扩写后的描述：", prompt)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    with col2:
-        with st.container():
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-            estimated_time = estimate_time("image")
-            st.write(f"预计生成时间：约 {estimated_time} 秒")
-            if st.button("是否继续？"):
-                st.session_state.continue_task = True
-            if st.session_state.get("continue_task", False) and (st.markdown(
-                    '<button class="custom-button">🎨 生成图像</button>',
-                    unsafe_allow_html=True
-            ) or st.button("生成图像（备用）")):
-                st.session_state.cancel_task = False
-                if st.markdown(
-                        '<button class="custom-button cancel-button">❌ 取消生成</button>',
-                        unsafe_allow_html=True
-                ) or st.button("取消生成（备用）"):
-                    st.session_state.cancel_task = True
-                if not prompt:
-                    st.error("请输入描述！")
-                else:
-                    with st.spinner("加载模型..."):
-                        pipe = load_diffusion_model("generate")
-                    if pipe:
-                        with st.spinner("生成图像..."):
-                            image = generate_image_from_text(prompt, pipe)
-                        if image:
-                            st.image(image, caption="生成的图像", use_column_width=True)
-                            output_file = os.path.join(output_path,
-                                                       f"image_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
-                            image.save(output_file)
-                            st.download_button(
-                                label="⬇️ 下载生成的图像",
-                                data=open(output_file, "rb").read(),
-                                file_name=os.path.basename(output_file),
-                                mime="image/png"
-                            )
-            st.markdown('</div>', unsafe_allow_html=True)
-
-# 功能 2：描述生成视频
-elif option == "🎬 描述生成视频":
-    with col1:
-        with st.container():
-            st.markdown('<div class="card"><h3>🎬 描述生成视频</h3>', unsafe_allow_html=True)
-            prompt = st.text_area("输入描述（如 '星空下的飞船'）", value="")
-            duration_input = st.text_input("视频时长（秒，例：5.5）", value="5")
-            try:
-                duration = float(duration_input)
-                if duration <= 0:
-                    raise ValueError("时长必须为正数")
-            except ValueError:
-                st.error("请输入有效时长（正数）！")
-                duration = None
-            uploaded_file = st.file_uploader("上传参考图像/视频（可选）", type=["jpg", "png", "jpeg", "mp4", "avi"])
-            if st.checkbox("✨ 智能扩写描述"):
-                prompt = expand_prompt(prompt, duration, uploaded_file,
-                                       "视频" if uploaded_file and uploaded_file.name.endswith(
-                                           (".mp4", ".avi")) else "图像")
-                st.write("扩写后的描述：", prompt)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    with col2:
-        with st.container():
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-            if duration:
-                estimated_time = estimate_time("video_generate", duration)
-                st.write(f"预计生成时间：约 {estimated_time} 秒")
-                if st.button("是否继续？"):
-                    st.session_state.continue_task = True
-                if st.session_state.get("continue_task", False) and (st.markdown(
-                        '<button class="custom-button">🎬 生成视频</button>',
-                        unsafe_allow_html=True
-                ) or st.button("生成视频（备用）")):
-                    st.session_state.cancel_task = False
-                    if st.markdown(
-                            '<button class="custom-button cancel-button">❌ 取消生成</button>',
-                            unsafe_allow_html=True
-                    ) or st.button("取消生成（备用）"):
-                        st.session_state.cancel_task = True
-                    if not prompt:
-                        st.error("请输入描述！")
+            if st.button("去除水印"):
+                with st.spinner("正在去除水印..."):
+                    if canvas_result.image_data is not None:
+                        mask = Image.fromarray(canvas_result.image_data)
+                        result = remove_watermark(image, mask)
+                        if result:
+                            st.image(result, caption="去除水印后")
                     else:
-                        with st.spinner("加载模型..."):
-                            pipe = load_diffusion_model("generate")
-                        if pipe:
-                            with st.spinner("生成视频..."):
-                                video_path = generate_video_from_text(prompt, pipe, duration)
-                            if video_path:
-                                st.video(video_path)
-                                st.download_button(
-                                    label="⬇️ 下载生成的视频",
-                                    data=open(video_path, "rb").read(),
-                                    file_name=os.path.basename(video_path),
-                                    mime="video/mp4"
-                                )
-            st.markdown('</div>', unsafe_allow_html=True)
+                        st.error("请绘制水印区域")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-# 功能 3：图像+描述生成视频
-elif option == "🖼️ 图像+描述生成视频":
-    with col1:
-        with st.container():
-            st.markdown('<div class="card"><h3>🖼️ 图像+描述生成视频</h3>', unsafe_allow_html=True)
-            prompt = st.text_area("输入描述（如 '飞船起飞'）", value="")
-            uploaded_file = st.file_uploader("上传初始图像", type=["jpg", "png", "jpeg"])
-            duration_input = st.text_input("视频时长（秒，例：5.5）", value="5")
-            try:
-                duration = float(duration_input)
-                if duration <= 0:
-                    raise ValueError("时长必须为正数")
-            except ValueError:
-                st.error("请输入有效时长（正数）！")
-                duration = None
-            if st.checkbox("✨ 智能扩写描述"):
-                prompt = expand_prompt(prompt, duration, uploaded_file, "图像")
-                st.write("扩写后的描述：", prompt)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    with col2:
-        with st.container():
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-            if duration and uploaded_file:
-                estimated_time = estimate_time("video_from_image", duration)
-                st.write(f"预计生成时间：约 {estimated_time} 秒")
-                if st.button("是否继续？"):
-                    st.session_state.continue_task = True
-                if st.session_state.get("continue_task", False) and (st.markdown(
-                        '<button class="custom-button">🎬 生成视频</button>',
-                        unsafe_allow_html=True
-                ) or st.button("生成视频（备用）")):
-                    st.session_state.cancel_task = False
-                    if st.markdown(
-                            '<button class="custom-button cancel-button">❌ 取消生成</button>',
-                            unsafe_allow_html=True
-                    ) or st.button("取消生成（备用）"):
-                        st.session_state.cancel_task = True
-                    if not prompt:
-                        st.error("请输入描述！")
-                    elif not uploaded_file:
-                        st.error("请上传初始图像！")
-                    else:
-                        with st.spinner("加载模型..."):
-                            pipe = load_diffusion_model("inpaint")
-                        if pipe:
-                            with st.spinner("生成视频..."):
-                                image = Image.open(uploaded_file)
-                                video_path = generate_video_from_image_and_text(image, prompt, pipe, duration)
-                            if video_path:
-                                st.video(video_path)
-                                st.download_button(
-                                    label="⬇️ 下载生成的视频",
-                                    data=open(video_path, "rb").read(),
-                                    file_name=os.path.basename(video_path),
-                                    mime="video/mp4"
-                                )
-            st.markdown('</div>', unsafe_allow_html=True)
-
-# 功能 4：智能扩写描述
-elif option == "✍️ 智能扩写描述":
-    with col1:
-        with st.container():
-            st.markdown('<div class="card"><h3>✍️ 智能扩写描述</h3>', unsafe_allow_html=True)
-            prompt = st.text_area("输入简短描述（如 '猫咪'）", value="")
-            duration_input = st.text_input("视频时长（秒，例：5.5，可选）", value="")
-            try:
-                duration = float(duration_input) if duration_input else None
-                if duration is not None and duration <= 0:
-                    raise ValueError("时长必须为正数")
-            except ValueError:
-                st.error("请输入有效时长（正数）或留空！")
-                duration = None
-            uploaded_file = st.file_uploader("上传参考图像/视频（可选）", type=["jpg", "png", "jpeg", "mp4", "avi"])
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    with col2:
-        with st.container():
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-            if st.markdown(
-                    '<button class="custom-button">✨ 扩写描述</button>',
-                    unsafe_allow_html=True
-            ) or st.button("扩写描述（备用）"):
-                if prompt:
-                    expanded_prompt = expand_prompt(
-                        prompt,
-                        duration,
-                        uploaded_file,
-                        "视频" if uploaded_file and uploaded_file.name.endswith((".mp4", ".avi")) else "图像"
-                    )
-                    st.write("扩写结果：", expanded_prompt)
+    with tab6:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.header("AI 补帧")
+        uploaded_video = st.file_uploader("上传视频", type=["mp4"])
+        st.write("选择目标 FPS：")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            target_fps_24 = st.button("24 FPS", key="target_fps_24", help="补帧到 24 帧/秒")
+        with col2:
+            target_fps_30 = st.button("30 FPS", key="target_fps_30", help="补帧到 30 帧/秒")
+        with col3:
+            target_fps_60 = st.button("60 FPS", key="target_fps_60", help="补帧到 60 帧/秒")
+        target_fps = 24
+        if target_fps_30:
+            target_fps = 30
+        elif target_fps_60:
+            target_fps = 60
+        if target_fps_24 or target_fps_30 or target_fps_60:
+            with st.spinner("正在补帧..."):
+                if uploaded_video:
+                    with open("input_video.mp4", "wb") as f:
+                        f.write(uploaded_video.read())
+                    video_path = ai_frame_interpolation("input_video.mp4", target_fps)
+                    if video_path:
+                        with open(video_path, "rb") as f:
+                            video_bytes = f.read()
+                        st.video(video_bytes)
                 else:
-                    st.error("请输入描述！")
-            st.markdown('</div>', unsafe_allow_html=True)
-
-# 功能 5：消除图像/视频水印
-elif option == "🧹 消除图像/视频水印":
-    with col1:
-        with st.container():
-            st.markdown('<div class="card"><h3>🧹 消除图像/视频水印</h3>', unsafe_allow_html=True)
-            file_type = st.radio("文件类型", ["图像", "视频"])
-            uploaded_file = st.file_uploader(
-                f"上传{file_type}",
-                type=["jpg", "png", "jpeg"] if file_type == "图像" else ["mp4", "avi"],
-                accept_multiple_files=False
-            )
-            if file_type == "视频":
-                duration_input = st.text_input("处理视频时长（秒，例：5.5）", value="10")
-                try:
-                    max_duration = float(duration_input)
-                    if max_duration <= 0:
-                        raise ValueError("时长必须为正数")
-                except ValueError:
-                    st.error("请输入有效时长（正数）！")
-                    max_duration = None
-            else:
-                max_duration = None
-            stroke_width = st.slider("🖌️ 画笔粗细", 1, 50, 10)
-            stroke_color = st.color_picker("🎨 画笔颜色", "#FFFFFF")
-            inpaint_radius = st.slider("🛠️ 补全半径", 1, 10, 3)
-            if uploaded_file:
-                if file_type == "图像":
-                    image = Image.open(uploaded_file)
-                    image_np = np.array(image)
-                    image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-                else:
-                    cap = cv2.VideoCapture(os.path.join(upload_path, uploaded_file.name))
-                    ret, frame = cap.read()
-                    cap.release()
-                    if not ret:
-                        st.error("无法读取视频帧！")
-                        image_np = None
-                    else:
-                        image_np = frame
-                if image_np is not None:
-                    st.write("绘制水印区域（白色）或擦除（黑色橡皮）")
-                    canvas_result = st_canvas(
-                        fill_color=stroke_color,
-                        stroke_width=stroke_width,
-                        stroke_color=stroke_color,
-                        background_image=Image.fromarray(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)),
-                        height=min(image_np.shape[0], 600),
-                        width=min(image_np.shape[1], 800),
-                        drawing_mode="freedraw",
-                        key="canvas"
-                    )
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    with col2:
-        with st.container():
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-            if uploaded_file and max_duration is not None:
-                estimated_time = estimate_time("image" if file_type == "图像" else "video_remove",
-                                               frame_count=int(max_duration * 24) if file_type == "视频" else None)
-                st.write(f"预计处理时间：约 {estimated_time} 秒")
-                if st.button("是否继续？"):
-                    st.session_state.continue_task = True
-            if st.session_state.get("continue_task", False) and (st.markdown(
-                    '<button class="custom-button">🧹 去除水印</button>',
-                    unsafe_allow_html=True
-            ) or st.button("去除水印（备用）")):
-                st.session_state.cancel_task = False
-                if st.markdown(
-                        '<button class="custom-button cancel-button">❌ 取消处理</button>',
-                        unsafe_allow_html=True
-                ) or st.button("取消处理（备用）"):
-                    st.session_state.cancel_task = True
-                if uploaded_file and canvas_result and canvas_result.image_data is not None:
-                    try:
-                        mask = canvas_result.image_data[:, :, 3].astype(np.uint8)
-                        mask[mask > 0] = 255
-
-                        if file_type == "图像":
-                            image = cv2.imdecode(np.frombuffer(uploaded_file.read(), np.uint8), cv2.IMREAD_COLOR)
-                            with st.spinner("处理图像..."):
-                                result = remove_watermark_image(image, mask, inpaint_radius)
-                            st.image(result, caption="去水印后的图像", channels="BGR", use_column_width=True)
-                            output_file = os.path.join(output_path,
-                                                       f"processed_image_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
-                            cv2.imwrite(output_file, result)
-                            st.download_button(
-                                label="⬇️ 下载去水印图像",
-                                data=open(output_file, "rb").read(),
-                                file_name=os.path.basename(output_file),
-                                mime="image/png"
-                            )
-
-                        elif file_type == "视频":
-                            temp_path = os.path.join(upload_path, uploaded_file.name)
-                            with open(temp_path, "wb") as f:
-                                f.write(uploaded_file.read())
-                            output_file = os.path.join(output_path,
-                                                       f"processed_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
-                            with st.spinner("处理视频..."):
-                                result = remove_watermark_video(temp_path, mask, output_file, inpaint_radius,
-                                                                max_duration)
-                            if result:
-                                st.video(result)
-                                st.download_button(
-                                    label="⬇️ 下载去水印视频",
-                                    data=open(result, "rb").read(),
-                                    file_name=os.path.basename(result),
-                                    mime="video/mp4"
-                                )
-
-                    except Exception as e:
-                        st.error(f"处理错误: {e}. 请检查文件格式或掩码是否正确。")
-                else:
-                    st.error("请上传文件并绘制水印区域！")
-            st.markdown('</div>', unsafe_allow_html=True)
-
-# 页脚
-st.markdown("---")
-st.markdown(f"🌟 运行于 {'GPU' if torch.cuda.is_available() else 'CPU'} | 上传: {upload_path} | 保存: {output_path}")
-st.markdown("**提示**：输入任意时长（如 5.5 秒）；白色画笔标记水印，黑色擦除；动态水印需进一步优化。")
+                    st.error("请上传视频")
+        st.markdown('</div>', unsafe_allow_html=True)
