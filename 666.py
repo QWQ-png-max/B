@@ -1,7 +1,6 @@
 import streamlit as st
 from diffusers import StableDiffusionXLPipeline, TextToVideoSDPipeline
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from streamlit_drawable_canvas import st_canvas
 import torch
 from PIL import Image
 import cv2
@@ -51,32 +50,30 @@ def load_text_model():
         st.error(f"加载扩写模型失败: {e}")
         return None, None
 
-# 加载 LaMa 水印去除模型（简化版，需本地模型文件）
+# 加载 LaMa 水印去除模型
 @st.cache_resource
 def load_lama_model():
     try:
-        # 假设 LaMa 模型已下载到本地（需手动下载：https://github.com/advimman/lama）
         from lama_cleaner.model import LaMa
-        model = LaMa(device="cuda" if torch.cuda.is_available() else "cpu")
+        model = LaMa(device="cuda" if torch.cuda.is_available() else "cpu", model_path="F:\\models\\lama\\experiments")
         return model
     except Exception as e:
         st.error(f"加载 LaMa 模型失败: {e}")
         return None
 
-# AI 补帧（RIFE 简化版，需本地模型）
+# 加载 RIFE 补帧模型
 @st.cache_resource
 def load_rife_model():
     try:
-        # 假设 RIFE 模型已下载（https://github.com/megvii-research/ECCV2022-RIFE）
         from rife import RIFE
-        model = RIFE(device="cuda" if torch.cuda.is_available() else "cpu")
+        model = RIFE(device="cuda" if torch.cuda.is_available() else "cpu", model_path="F:\\models\\rife\\train_log")
         return model
     except Exception as e:
         st.error(f"加载 RIFE 模型失败: {e}")
         return None
 
 # 中文扩写
-def generate_text(prompt, max_length=100):
+def generate_text(prompt, max_length=150):
     try:
         tokenizer, model = load_text_model()
         if tokenizer is None or model is None:
@@ -115,7 +112,7 @@ def generate_video(prompt, duration=5, fps=24):
         return None
     try:
         frames = duration * fps
-        frame_time = 1.5 if torch.cuda.is_available() else 6  # RTX 4060: 1.5s/帧, CPU: 6s/帧
+        frame_time = 1.5 if torch.cuda.is_available() else 6  # RTX 4060: 1.5s/帧
         progress_bar = st.progress(0)
         time_display = st.empty()
         video_frames = pipe(prompt, num_frames=frames, num_inference_steps=50).frames
@@ -144,7 +141,7 @@ def generate_image_to_video(image, prompt, duration=5, fps=24):
         frame_time = 1.5 if torch.cuda.is_available() else 6
         progress_bar = st.progress(0)
         time_display = st.empty()
-        video_frames = pipe(prompt, num_frames=frames, num_inference_steps=50).frames  # 简化，需结合初始图像
+        video_frames = pipe(prompt, num_frames=frames, num_inference_steps=50).frames  # 待优化：结合初始图像
         for i in range(frames):
             progress = (i + 1) / frames
             progress_bar.progress(progress)
@@ -165,7 +162,6 @@ def remove_watermark(image, mask):
     try:
         model = load_lama_model()
         if model is None:
-            # 回退到 cv2.inpaint
             image_np = np.array(image)
             mask_np = np.array(mask)[:, :, 3]
             mask_np = mask_np.astype(np.uint8)
@@ -185,7 +181,6 @@ def ai_frame_interpolation(video_path, target_fps):
     try:
         model = load_rife_model()
         if model is None:
-            # 回退到简单插帧
             cap = cv2.VideoCapture(video_path)
             frames = []
             while cap.isOpened():
@@ -208,7 +203,6 @@ def ai_frame_interpolation(video_path, target_fps):
                 out.write(frame)
             out.release()
             return out_path
-        # RIFE 插帧（需本地模型）
         cap = cv2.VideoCapture(video_path)
         frames = []
         while cap.isOpened():
@@ -240,116 +234,198 @@ if "theme" not in st.session_state:
 def toggle_theme():
     st.session_state.theme = "light" if st.session_state.theme == "dark" else "dark"
 
-# UI 样式
+# UI 样式（华丽版）
 theme_styles = {
     "dark": """
-        .main { 
-            background: linear-gradient(135deg, #1e3a8a, #3b82f6); 
-            padding: 20px; 
-            border-radius: 10px; 
-            color: white; 
+        .main {
+            background: linear-gradient(135deg, #6b21a8, #3b82f6);
+            padding: 30px;
+            border-radius: 15px;
+            color: white;
+            animation: gradient 5s ease infinite;
+            background-size: 200% 200%;
+        }
+        @keyframes gradient {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
         }
         .stButton>button {
-            background: linear-gradient(45deg, #7c3aed, #db2777);
+            background: linear-gradient(45deg, #9333ea, #ec4899);
             color: white;
             border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            font-size: 16px;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 18px;
             font-weight: bold;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
-            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 6px 15px rgba(0,0,0,0.4);
+            transition: transform 0.3s, box-shadow 0.3s, filter 0.3s;
+            animation: pulse 2s infinite;
         }
         .stButton>button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(219, 39, 119, 0.5);
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(236, 72, 153, 0.6);
+            filter: brightness(1.2);
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 10px rgba(236, 72, 153, 0.4); }
+            50% { box-shadow: 0 0 20px rgba(236, 72, 153, 0.8); }
+            100% { box-shadow: 0 0 10px rgba(236, 72, 153, 0.4); }
         }
         .stTextInput>div>input {
-            border: 2px solid #3b82f6;
-            border-radius: 5px;
-            padding: 10px;
-            background-color: #1e40af;
+            border: 2px solid #9333ea;
+            border-radius: 8px;
+            padding: 12px;
+            background-color: rgba(30, 64, 175, 0.8);
             color: white;
+            font-size: 16px;
         }
         .stSlider>div>div {
-            background-color: #3b82f6;
+            background-color: #9333ea;
         }
         .stProgress .st-bo {
-            background-color: #3b82f6;
+            background-color: #9333ea;
+            border-radius: 5px;
         }
         .stTabs [data-baseweb="tab"] {
-            background-color: #1e3a8a;
+            background-color: rgba(30, 64, 175, 0.8);
             color: white;
-            border-radius: 5px;
-            margin: 0 5px;
+            border-radius: 8px;
+            margin: 0 8px;
+            padding: 10px 20px;
+            font-size: 16px;
         }
         .stTabs [data-baseweb="tab"]:hover {
-            background-color: #3b82f6;
+            background-color: #9333ea;
         }
-        .fps-button {
-            margin-right: 10px;
+        .card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            transition: transform 0.3s;
+        }
+        .card:hover {
+            transform: translateY(-5px);
         }
         .title {
-            animation: fadeIn 1s ease-in-out;
+            animation: fadeIn 1.5s ease-in-out;
+            text-shadow: 0 0 10px rgba(236, 72, 153, 0.8);
         }
         @keyframes fadeIn {
-            0% { opacity: 0; transform: translateY(-10px); }
+            0% { opacity: 0; transform: translateY(-20px); }
             100% { opacity: 1; transform: translateY(0); }
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #9333ea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     """,
     "light": """
-        .main { 
-            background: linear-gradient(135deg, #e0e7ff, #f9fafb); 
-            padding: 20px; 
-            border-radius: 10px; 
-            color: #1e3a8a; 
+        .main {
+            background: linear-gradient(135deg, #e0e7ff, #f9fafb);
+            padding: 30px;
+            border-radius: 15px;
+            color: #1e3a8a;
+            animation: gradient 5s ease infinite;
+            background-size: 200% 200%;
+        }
+        @keyframes gradient {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
         }
         .stButton>button {
             background: linear-gradient(45deg, #3b82f6, #93c5fd);
             color: white;
             border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            font-size: 16px;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 18px;
             font-weight: bold;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 6px 15px rgba(0,0,0,0.3);
+            transition: transform 0.3s, box-shadow 0.3s, filter 0.3s;
+            animation: pulse 2s infinite;
         }
         .stButton>button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(59, 130, 246, 0.5);
+            filter: brightness(1.2);
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 10px rgba(59, 130, 246, 0.4); }
+            50% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.8); }
+            100% { box-shadow: 0 0 10px rgba(59, 130, 246, 0.4); }
         }
         .stTextInput>div>input {
             border: 2px solid #3b82f6;
-            border-radius: 5px;
-            padding: 10px;
+            border-radius: 8px;
+            padding: 12px;
             background-color: white;
             color: #1e3a8a;
+            font-size: 16px;
         }
         .stSlider>div>div {
             background-color: #3b82f6;
         }
         .stProgress .st-bo {
             background-color: #3b82f6;
+            border-radius: 5px;
         }
         .stTabs [data-baseweb="tab"] {
             background-color: #e0e7ff;
             color: #1e3a8a;
-            border-radius: 5px;
-            margin: 0 5px;
+            border-radius: 8px;
+            margin: 0 8px;
+            padding: 10px 20px;
+            font-size: 16px;
         }
         .stTabs [data-baseweb="tab"]:hover {
             background-color: #93c5fd;
         }
-        .fps-button {
-            margin-right: 10px;
+        .card {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            transition: transform 0.3s;
+        }
+        .card:hover {
+            transform: translateY(-5px);
         }
         .title {
-            animation: fadeIn 1s ease-in-out;
+            animation: fadeIn 1.5s ease-in-out;
+            text-shadow: 0 0 10px rgba(59, 130, 246, 0.8);
         }
         @keyframes fadeIn {
-            0% { opacity: 0; transform: translateY(-10px); }
+            0% { opacity: 0; transform: translateY(-20px); }
             100% { opacity: 1; transform: translateY(0); }
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     """
 }
@@ -357,13 +433,6 @@ theme_styles = {
 st.markdown(f"""
     <style>
     {theme_styles[st.session_state.theme]}
-    .card {{
-        background-color: { '#1e40af' if st.session_state.theme == 'dark' else '#f9fafb' };
-        padding: 15px;
-        border-radius: 10px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        margin-bottom: 20px;
-    }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -381,7 +450,7 @@ with st.container():
         st.header("描述生成图像")
         prompt = st.text_input("输入描述", "月光下的湖泊", key="image_prompt")
         if st.button("生成图像"):
-            with st.spinner("正在生成图像..."):
+            with st.markdown('<div class="spinner"></div>', unsafe_allow_html=True):
                 image = generate_image(prompt)
                 if image:
                     st.image(image, caption="生成图像")
@@ -406,7 +475,7 @@ with st.container():
         elif fps_60:
             fps = 60
         if fps_24 or fps_30 or fps_60:
-            with st.spinner("正在生成视频..."):
+            with st.markdown('<div class="spinner"></div>', unsafe_allow_html=True):
                 video_path = generate_video(prompt, duration, fps)
                 if video_path:
                     with open(video_path, "rb") as f:
@@ -434,7 +503,7 @@ with st.container():
         elif fps_60:
             fps = 60
         if fps_24 or fps_30 or fps_60:
-            with st.spinner("正在生成视频..."):
+            with st.markdown('<div class="spinner"></div>', unsafe_allow_html=True):
                 if uploaded_image:
                     image = Image.open(uploaded_image)
                     video_path = generate_image_to_video(image, prompt, duration, fps)
@@ -451,7 +520,7 @@ with st.container():
         st.header("智能扩写")
         prompt = st.text_input("输入中文描述（扩写）", "海洋")
         if st.button("智能扩写"):
-            with st.spinner("正在扩写..."):
+            with st.markdown('<div class="spinner"></div>', unsafe_allow_html=True):
                 expanded_text = generate_text(prompt)
                 st.write("扩写结果：")
                 st.write(expanded_text)
@@ -464,25 +533,17 @@ with st.container():
         if uploaded_image:
             image = Image.open(uploaded_image)
             st.image(image, caption="原始图像")
-            canvas_result = st_canvas(
-                stroke_width=3,
-                stroke_color="#000000",
-                background_image=image,
-                update_streamlit=True,
-                height=400,
-                width=600,
-                drawing_mode="freedraw",
-                key="canvas"
-            )
+            # 临时替换 st_canvas
+            mask_file = st.file_uploader("上传掩码图像（透明区域为水印）", type=["png"], key="mask_image")
             if st.button("去除水印"):
-                with st.spinner("正在去除水印..."):
-                    if canvas_result.image_data is not None:
-                        mask = Image.fromarray(canvas_result.image_data)
+                with st.markdown('<div class="spinner"></div>', unsafe_allow_html=True):
+                    if mask_file:
+                        mask = Image.open(mask_file)
                         result = remove_watermark(image, mask)
                         if result:
                             st.image(result, caption="去除水印后")
                     else:
-                        st.error("请绘制水印区域")
+                        st.error("请上传掩码图像")
         st.markdown('</div>', unsafe_allow_html=True)
 
     with tab6:
@@ -503,7 +564,7 @@ with st.container():
         elif target_fps_60:
             target_fps = 60
         if target_fps_24 or target_fps_30 or target_fps_60:
-            with st.spinner("正在补帧..."):
+            with st.markdown('<div class="spinner"></div>', unsafe_allow_html=True):
                 if uploaded_video:
                     with open("input_video.mp4", "wb") as f:
                         f.write(uploaded_video.read())
