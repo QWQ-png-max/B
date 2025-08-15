@@ -4,4 +4,6 @@ opencv-python-headless==4.10.0.84
 numpy==2.1.1
 Pillow==10.4.0
 diffusers==0.30.3
-torch==2.8.0+cu12.8
+torch==2.8.0+cu128
+torchvision==0.19.1+cu128
+torchaudio==2.3.1+cu128
