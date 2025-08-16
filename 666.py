@@ -92,22 +92,18 @@ class Discriminator(nn.Module):
 class UNet(nn.Module):
     def __init__(self):
         super(UNet, self).__init__()
-        # 编码器
         self.enc1 = nn.Conv2d(3, 64, 3, padding=1)
         self.enc2 = nn.Conv2d(64, 128, 3, padding=1)
         self.enc3 = nn.Conv2d(128, 256, 3, padding=1)
         self.pool = nn.MaxPool2d(2, 2)
-        # 解码器
         self.dec1 = nn.ConvTranspose2d(256, 128, 2, stride=2)
         self.dec2 = nn.ConvTranspose2d(256, 64, 2, stride=2)
         self.dec3 = nn.Conv2d(128, 3, 3, padding=1)
 
     def forward(self, x):
-        # 编码
         e1 = torch.relu(self.enc1(x))
         e2 = torch.relu(self.enc2(self.pool(e1)))
         e3 = torch.relu(self.enc3(self.pool(e2)))
-        # 解码
         d1 = torch.relu(self.dec1(e3))
         d2 = torch.relu(self.dec2(torch.cat([d1, e2], dim=1)))
         d3 = torch.tanh(self.dec3(torch.cat([d2, e1], dim=1)))
@@ -129,8 +125,6 @@ def train_dcgan(generator, discriminator, data_loader, epochs=10):
             images = images.to(device)
             real_labels = torch.ones(batch_size, 1).to(device)
             fake_labels = torch.zeros(batch_size, 1).to(device)
-            
-            # 训练判别器
             d_optimizer.zero_grad()
             real_output = discriminator(images)
             d_real_loss = criterion(real_output, real_labels)
@@ -141,14 +135,11 @@ def train_dcgan(generator, discriminator, data_loader, epochs=10):
             d_loss = d_real_loss + d_fake_loss
             d_loss.backward()
             d_optimizer.step()
-            
-            # 训练生成器
             g_optimizer.zero_grad()
             fake_output = discriminator(fake_images)
             g_loss = criterion(fake_output, real_labels)
             g_loss.backward()
             g_optimizer.step()
-        
         torch.save(generator.state_dict(), f"weights/generator_epoch_{epoch+1}.pth")
         torch.save(discriminator.state_dict(), f"weights/discriminator_epoch_{epoch+1}.pth")
         st.write(f"Epoch {epoch+1}, D Loss: {d_loss.item():.4f}, G Loss: {g_loss.item():.4f}")
@@ -178,7 +169,6 @@ def download_dataset():
         st.write("下载 COCO 数据集...")
         # 示例：实际需替换为真实下载逻辑
         os.makedirs("data/coco")
-        # 使用 requests 下载 COCO 数据集（或手动下载）
     if not os.path.exists("data/ucf101"):
         st.write("下载 UCF101 数据集...")
         os.makedirs("data/ucf101")
@@ -240,6 +230,27 @@ def interpolate_frames(frames, target_fps):
         interpolated.append(mid_frame.astype(np.uint8))
     interpolated.append(frames[-1])
     return interpolated
+
+# 音频生成（优化，使用 pydub）
+def generate_audio(audio_type, file=None, operation=None, value=None):
+    try:
+        if audio_type == "背景音效":
+            # 生成简单音效（示例：白噪音）
+            audio = AudioSegment.silent(duration=1000)
+            result_path = f"cache/audio_{int(time.time())}.mp3"
+            audio.export(result_path, format="mp3")
+        else:
+            audio = AudioSegment.from_file(file.name)
+            if operation == "音量调整":
+                audio = audio + value
+            elif operation == "裁剪":
+                audio = audio[:value * 1000]
+            result_path = f"cache/audio_{int(time.time())}_{file.name}"
+            audio.export(result_path, format=file.name.split(".")[-1])
+        return result_path
+    except Exception as e:
+        logging.error(f"音频生成失败: {str(e)}")
+        return None
 
 # 主函数
 def main():
@@ -367,7 +378,7 @@ def main():
                 st.video(result_path)
                 st.download_button("下载", open(result_path, "rb").read(), video.name)
     
-    # 音频生成
+    # 音频生成（优化）
     with tabs[4]:
         st.header("音频生成")
         audio_type = st.selectbox("生成类型", ["背景音效", "上传音频处理"])
@@ -377,20 +388,12 @@ def main():
             value = st.slider("值", -20, 20, 0) if operation == "音量调整" else st.number_input("裁剪时长（秒）", 1, 300, 10)
         if st.button("生成音频", key="gen_audio"):
             with st.spinner("处理中..."):
-                if audio_type == "背景音效":
-                    audio = AudioSegment.silent(duration=1000)  # 示例音效
-                    result_path = f"cache/audio_{int(time.time())}.mp3"
-                    audio.export(result_path, format="mp3")
+                result = generate_audio(audio_type, audio, operation, value)
+                if result:
+                    st.audio(result)
+                    st.download_button("下载", open(result, "rb").read(), "generated_audio.mp3")
                 else:
-                    audio = AudioSegment.from_file(audio.name)
-                    if operation == "音量调整":
-                        audio = audio + value
-                    else:
-                        audio = audio[:value * 1000]
-                    result_path = f"cache/audio_{int(time.time())}_{audio.name}"
-                    audio.export(result_path, format=audio.name.split(".")[-1])
-                st.audio(result_path)
-                st.download_button("下载", open(result_path, "rb").read(), "generated_audio.mp3")
+                    st.error("音频生成失败，请检查 logs/error.log")
 
 if __name__ == "__main__":
     main()
