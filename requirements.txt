@@ -1,6 +1,6 @@
-streamlit==1.47.1
+streamlit
 torch --pre --index-url https://download.pytorch.org/whl/cu130
-diffusers==0.30.3
+diffusers
 transformers
 opencv-python
 real-esrgan
