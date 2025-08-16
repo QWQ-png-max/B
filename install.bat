@@ -9,26 +9,45 @@ if %ERRORLEVEL% neq 0 (
     exit /b
 )
 
-:: 创建并激活虚拟环境
-if not exist "F:\1\.venv" (
-    python -m venv F:\1\.venv
-)
-call F:\1\.venv\Scripts\activate
-
-:: 升级 pip
+:: 修复 pip
+echo 正在修复 pip...
+python -m ensurepip --upgrade
 python -m pip install --upgrade pip
+pip --version >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo 错误: pip 安装失败，请检查 Python 安装
+    pause
+    exit /b
+)
 
 :: 清理 pip 缓存
 python -m pip cache purge
 
+:: 定义国内镜像列表
+set MIRRORS= ^
+    https://pypi.tuna.tsinghua.edu.cn/simple ^
+    https://mirrors.aliyun.com/pypi/simple ^
+    https://pypi.doubanio.com/simple ^
+    https://mirrors.huaweicloud.com/pypi/simple
+
 :: 安装依赖
 echo 正在安装依赖...
-python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-if %ERRORLEVEL% neq 0 (
-    echo 依赖安装失败，请检查网络或 requirements.txt
-    pause
-    exit /b
+for %%m in (%MIRRORS%) do (
+    echo 尝试使用镜像: %%m
+    python -m pip install -r requirements.txt -i %%m --trusted-host pypi.tuna.tsinghua.edu.cn --trusted-host mirrors.aliyun.com --trusted-host pypi.doubanio.com --trusted-host mirrors.huaweicloud.com
+    if %ERRORLEVEL% equ 0 (
+        echo 依赖安装成功！
+        goto :install_success
+    ) else (
+        echo 镜像 %%m 安装失败，尝试下一个镜像...
+    )
 )
+
+echo 所有镜像均安装失败，请检查网络或 requirements.txt
+pause
+exit /b
+
+:install_success
 
 :: 检查 FFmpeg
 ffmpeg -version >nul 2>&1
