@@ -1,13 +1,10 @@
-streamlit
-torch --pre --index-url https://download.pytorch.org/whl/cu130
-diffusers
-transformers
+torch --index-url https://download.pytorch.org/whl/cu130
+torchvision --index-url https://download.pytorch.org/whl/cu130
 opencv-python
-real-esrgan
-rife-ncnn-vulkan
-lama-cleaner
-streamlit-drawable-canvas
+numpy
+pillow
 pydub
 ffmpeg-python
-huggingface_hub
-pynvml
+streamlit
+requests
+tqdm
