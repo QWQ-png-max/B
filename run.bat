@@ -1,4 +1,4 @@
 @echo off
 call F:\1\.venv\Scripts\activate
-streamlit run ai_toolkit.py
+streamlit run 666.py
 pause
