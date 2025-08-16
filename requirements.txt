@@ -1,13 +1,13 @@
 streamlit==1.47.1
-torch==2.5.0 --pre --index-url https://download.pytorch.org/whl/cu130
+torch --pre --index-url https://download.pytorch.org/whl/cu130
 diffusers==0.30.3
-transformers==4.45.2
-opencv-python==4.10.0
-real-esrgan==0.3.0
-rife-ncnn-vulkan==1.1.0
-lama-cleaner==1.2.0
-streamlit-drawable-canvas==0.9.3
-pydub==0.25.1
-ffmpeg-python==0.2.0
-huggingface_hub==0.25.1
-pynvml==11.5.0
+transformers
+opencv-python
+real-esrgan
+rife-ncnn-vulkan
+lama-cleaner
+streamlit-drawable-canvas
+pydub
+ffmpeg-python
+huggingface_hub
+pynvml
